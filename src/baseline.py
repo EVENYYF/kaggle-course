@@ -207,7 +207,7 @@ def append_result(row):
         writer.writerow(row)
 
 
-def train_fold(fold, records, assignments, config, device, output, smoke, test_records):
+def train_fold(fold, records, assignments, config, device, output, smoke, test_records, name="baseline"):
     train = [row for row, assigned in zip(records, assignments) if assigned != fold]
     valid = [row for row, assigned in zip(records, assignments) if assigned == fold]
     train_loader = make_loader(train, config, training=True)
@@ -263,7 +263,7 @@ def train_fold(fold, records, assignments, config, device, output, smoke, test_r
             handle.flush()
             print(f"fold={fold} epoch={epoch}/{epochs} loss={loss_sum / seen:.4f} "
                   f"val_acc={accuracy:.4f} time={seconds:.1f}s MPS={torch.backends.mps.is_available()}", flush=True)
-            if not smoke and fold == 1 and epoch == 3 and accuracy < 0.50:
+            if not smoke and name == "baseline" and fold == 1 and epoch == 3 and accuracy < 0.50:
                 raise RuntimeError(
                     f"Stopping after fold 1 epoch 3: validation accuracy {accuracy:.4f} "
                     "is below the required 0.50; no later folds will run"
@@ -285,8 +285,8 @@ def train_fold(fold, records, assignments, config, device, output, smoke, test_r
     matrix = confusion_matrix(truths, probabilities.argmax(axis=1),
                               labels=list(range(len(read_mapping()))))
     np.savetxt(output / "confusion_matrix.csv", matrix, fmt="%d", delimiter=",")
-    test_probs, _ = predict(model, make_loader(test_records, config), device)
-    append_result({"experiment": "baseline", "fold": fold, "epochs": epochs,
+    test_probs = predict(model, make_loader(test_records, config), device)[0] if test_records else None
+    append_result({"experiment": name, "fold": fold, "epochs": epochs,
                    "final_val_accuracy": accuracy, "best_epoch": best_epoch,
                    "best_val_accuracy": best_accuracy, "duration_seconds": round(duration, 2)})
     return valid, probabilities, test_probs, accuracy, best_epoch, best_accuracy, duration
@@ -295,9 +295,18 @@ def train_fold(fold, records, assignments, config, device, output, smoke, test_r
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--smoke", action="store_true", help="Run fold 1 for one epoch only")
+    parser.add_argument("--config", type=Path, default=Path("configs/baseline.yaml"),
+                        help="Configuration file path, relative to the project root or absolute")
+    parser.add_argument("--name", default="baseline", help="Experiment name")
+    parser.add_argument("--only-fold", type=int, choices=range(1, 6),
+                        help="Run only the specified fold, without full-run outputs or submission")
     args = parser.parse_args()
-    config = yaml.safe_load((ROOT / "configs" / "baseline.yaml").read_text(encoding="utf-8"))
-    if config["folds"] != 5 or config["epochs"] != 10 or config["warmup_epochs"] != 1:
+    if args.smoke and args.only_fold is not None:
+        parser.error("--smoke and --only-fold cannot be used together")
+    config = yaml.safe_load((ROOT / args.config).read_text(encoding="utf-8"))
+    if config["folds"] != 5:
+        raise ValueError("Requires 5 folds")
+    if args.name == "baseline" and (config["epochs"] != 10 or config["warmup_epochs"] != 1):
         raise ValueError("Baseline requires 5 folds, 10 epochs, and 1 warmup epoch")
     if not torch.backends.mps.is_available():
         raise RuntimeError("MPS unavailable; refusing to run the requested MPS baseline")
@@ -313,15 +322,19 @@ def main():
         return
 
     header, names, test_records = submission_rows(mapping)
-    output = RUNS / "baseline"
-    if output.exists() and any(output.iterdir()):
+    output = RUNS / args.name
+    if output.exists():
         raise FileExistsError(f"Full-run output already exists: {output}; refusing to overwrite")
     oof = np.full((len(records), len(mapping)), np.nan, dtype=np.float32)
     test_sum = np.zeros((len(names), len(mapping)), dtype=np.float64)
     finals, bests, times = [], [], []
-    for fold in range(1, config["folds"] + 1):
+    folds = (args.only_fold,) if args.only_fold is not None else range(1, config["folds"] + 1)
+    for fold in folds:
         result = train_fold(fold, records, assignments, config, device,
-                            output / f"fold_{fold}", False, test_records)
+                            output / f"fold_{fold}", False,
+                            test_records if args.only_fold is None else [], name=args.name)
+        if args.only_fold is not None:
+            return
         valid, valid_probs, test_probs, final_acc, _, best_acc, duration = result
         indices = [index for index, assigned in enumerate(assignments) if assigned == fold]
         if [records[index] for index in indices] != valid:
@@ -343,7 +356,7 @@ def main():
     average = (test_sum / config["folds"]).astype(np.float32)
     np.save(output / "test_probs.npy", average)
     for title, values in (("mean", finals), ("std", finals)):
-        append_result({"experiment": "baseline", "fold": title, "epochs": config["epochs"],
+        append_result({"experiment": args.name, "fold": title, "epochs": config["epochs"],
                        "final_val_accuracy": float(np.mean(values)) if title == "mean" else float(np.std(values)),
                        "best_epoch": "", "best_val_accuracy": float(np.mean(bests)) if title == "mean" else float(np.std(bests)),
                        "duration_seconds": round(float(np.sum(times)), 2) if title == "mean" else ""})
