@@ -1,0 +1,23 @@
+# Data, outputs, and local Python environment
+data/
+runs/
+.venv/
+__pycache__/
+*.pt
+*.pth
+
+# Python tooling
+*.py[cod]
+.ipynb_checkpoints/
+
+# macOS metadata
+.DS_Store
+._*
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+kaggle.json
+*.pem
+*.key
