@@ -1,10 +1,12 @@
-# Data, outputs, and local Python environment
+# Data, checkpoints, and local Python environment
 data/
-runs/
 .venv/
 __pycache__/
 *.pt
 *.pth
+
+# TensorBoard logs; keep CSV and NPY experiment evidence
+runs/tb/
 
 # Python tooling
 *.py[cod]
